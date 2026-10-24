@@ -1,77 +1,113 @@
 <!DOCTYPE html>
 <html lang="en">
-	<head>
-		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-		<title>Live Chat Room</title>
-		<link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}"/>
-		<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:400,500,700&display=swap"/>
-		<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
-	</head>
-	<body>
-		<header>
-			<div class="header-content">
-				<h1>Live Chat Room</h1>
-				<div class="user-info">
-					<span id="username">{{ username }}</span>
-				</div>
-			</div>
-		</header>
-		<div class="container">
-			<aside class="sidebar">
-				<section class="room-list">
-					<h3>Rooms</h3>
-					{% for room in rooms %}
-					<div class="room-item" onclick="joinRoom('{{ room }}')">
-						<span class="room-icon">#</span> {{ room }}
-					</div>
-					{% endfor %}
-				</section>
-				<section class="user-list">
-					<h3>Online Users</h3>
-					<div id="active-users"></div>
-				</section>
-			</aside>
-			<main class="main-chat">
-				<div id="chat"></div>
-				<form
-					class="input-area"
-					onsubmit="event.preventDefault(); sendMessage();"
-				>
-					<input
-						id="message"
-						type="text"
-						placeholder="Type a message..."
-						autocomplete="off"
-						onkeypress="handleKeyPress(event)"
-					/>
-					<button type="submit" title="Send">
-						<span>➤</span>
-					</button>
-				</form>
-			</main>
-		</div>
-		<button class="fab-menu" onclick="toggleSidebar()" title="Show Online Users">
-		  👥 <span style="font-size:0.95em;">Online</span>
-		</button>
-		<script src="{{ url_for('static', filename='chat.js') }}"></script>
-		<div style="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:-1;pointer-events:none;">
-		  <svg width="100%" height="100%">
-		    <defs>
-		      <radialGradient id="g1" cx="50%" cy="50%" r="80%">
-		        <stop offset="0%" stop-color="#ffb347" stop-opacity="0.25"/>
-		        <stop offset="100%" stop-color="#6a11cb" stop-opacity="0"/>
-		      </radialGradient>
-		    </defs>
-		    <circle cx="80%" cy="20%" r="300" fill="url(#g1)">
-		      <animate attributeName="cx" values="80%;20%;80%" dur="12s" repeatCount="indefinite"/>
-		      <animate attributeName="cy" values="20%;80%;20%" dur="14s" repeatCount="indefinite"/>
-		    </circle>
-		    <circle cx="20%" cy="80%" r="200" fill="url(#g1)">
-		      <animate attributeName="cx" values="20%;80%;20%" dur="16s" repeatCount="indefinite"/>
-		      <animate attributeName="cy" values="80%;20%;80%" dur="18s" repeatCount="indefinite"/>
-		    </circle>
-		  </svg>
-		</div>
-	</body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <title>Live Chat Room</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" defer></script>
+  <script src="{{ url_for('static', filename='chat.js') }}" defer></script>
+</head>
+<body data-user-id="{{ user.id }}" data-username="{{ user.username }}" data-user-role="{{ user.role }}">
+  <header>
+    <div class="header-content">
+      <h1>Live Chat Room</h1>
+      <div class="user-info">
+        <span id="username">{{ user.username }}</span>
+        <button class="text-button" id="change-name" type="button">Edit profile</button>
+        <form action="{{ url_for('logout') }}" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="text-button" type="submit">Sign out</button>
+        </form>
+      </div>
+    </div>
+  </header>
+  <div class="container">
+    <aside class="sidebar">
+      <section class="room-list">
+        <div class="section-heading">
+          <h3>Rooms</h3>
+          <button id="create-room" class="small-button" type="button" aria-label="Create room">+</button>
+        </div>
+        <div id="rooms">
+          {% for room in rooms %}
+          <div class="room-entry">
+            <button class="room-item" data-room-id="{{ room.id }}" data-room-name="{{ room.name }}" data-owner-id="{{ room.owner_id or '' }}">
+              <span class="room-icon">#</span><span>{{ room.name }}</span>
+              {% if room.is_private %}<span aria-label="private">🔒</span>{% endif %}
+            </button>
+            {% if room.is_private and room.owner_id == user.id %}
+            <button class="small-button" type="button" data-invite-room="{{ room.id }}" aria-label="Invite user to {{ room.name }}">Invite</button>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      <section class="user-list">
+        <h3>Online Users</h3>
+        <div id="active-users" aria-live="polite"></div>
+      </section>
+      <section class="utility-panel">
+        <button id="search-toggle" class="utility-button" type="button">Search messages</button>
+        <button id="theme-toggle" class="utility-button" type="button">Toggle dark mode</button>
+      </section>
+    </aside>
+    <main class="main-chat">
+      <div class="chat-heading">
+        <h2 id="room-title">General</h2>
+        <span id="typing-indicator" aria-live="polite"></span>
+        <button id="block-user" class="small-button" type="button" hidden>Block user</button>
+        <button id="ban-user" class="small-button" type="button" hidden>Ban user</button>
+        <button id="notifications-toggle" class="small-button" type="button">Enable notifications</button>
+      </div>
+      <div id="search-panel" hidden>
+        <input id="search-query" type="search" placeholder="Search messages (2+ characters)">
+        <button id="search-submit" class="small-button" type="button">Search</button>
+        <button id="search-close" class="small-button" type="button">Close</button>
+      </div>
+      <div id="search-results" hidden></div>
+      <button id="load-older" class="utility-button load-older" type="button" hidden>Load older messages</button>
+      <div id="chat" role="log" aria-live="polite" aria-relevant="additions"></div>
+      <div class="recording-controls">
+        <span id="attachment-name"></span>
+        <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,audio/*,video/webm,video/mp4" hidden>
+        <button id="attach-button" class="small-button" type="button" title="Attach a file">Attach</button>
+        <button id="record-button" class="small-button" type="button" title="Record a voice note">Record voice</button>
+        <button id="stop-recording" class="small-button" type="button" hidden>Stop recording</button>
+      </div>
+      <form class="input-area" id="message-form">
+        <input id="message" maxlength="2000" type="text" placeholder="Type a message... (use @username for a private message)" autocomplete="off">
+        <button type="submit" title="Send message"><span>➤</span></button>
+      </form>
+    </main>
+  </div>
+  <button class="fab-menu" type="button" title="Show rooms and users">👥 Online</button>
+  <dialog id="create-room-dialog">
+    <form method="dialog" id="create-room-form">
+      <h2>Create a room</h2>
+      <label>Room name<input id="new-room-name" maxlength="30" required></label>
+      <label>Description<input id="new-room-description" maxlength="200"></label>
+      <label class="check-label"><input id="new-room-private" type="checkbox"> Private (owner-only until invitations are added)</label>
+      <p class="dialog-error" id="room-error"></p>
+      <div class="dialog-actions"><button type="button" data-dialog-cancel class="utility-button">Cancel</button><button id="create-room-submit" type="button">Create</button></div>
+    </form>
+  </dialog>
+  <dialog id="profile-dialog">
+    <form method="dialog" id="profile-form">
+      <h2>Edit profile</h2>
+      <label>Display name<input id="profile-name" minlength="3" maxlength="24" required></label>
+      <p class="dialog-error" id="profile-error"></p>
+      <div class="dialog-actions"><button type="button" data-dialog-cancel class="utility-button">Cancel</button><button id="profile-save" type="button">Save</button></div>
+    </form>
+  </dialog>
+  <dialog id="invite-dialog">
+    <form method="dialog" id="invite-form">
+      <h2>Invite to private room</h2>
+      <label>Username<input id="invite-username" minlength="3" maxlength="24" required autocomplete="off"></label>
+      <p class="dialog-error" id="invite-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" data-dialog-cancel class="utility-button">Cancel</button><button id="invite-submit" type="button">Invite</button></div>
+    </form>
+  </dialog>
+</body>
 </html>
