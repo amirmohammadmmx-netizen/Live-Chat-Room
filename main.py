@@ -697,7 +697,7 @@ def register_routes(app: Flask) -> None:
         if users_are_blocked(session["user_id"], other["id"]):
             return jsonify(error="This private conversation is unavailable."), 403
         rows = get_db().execute(
-            """SELECT m.*, u.username FROM messages m JOIN users u ON u.id = m.sender_id
+            """SELECT m.*, u.username, u.avatar_filename FROM messages m JOIN users u ON u.id = m.sender_id
                WHERE m.room_id IS NULL
                AND ((m.sender_id = ? AND m.recipient_id = ?)
                  OR (m.sender_id = ? AND m.recipient_id = ?))
