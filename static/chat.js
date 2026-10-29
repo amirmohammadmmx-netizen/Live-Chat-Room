@@ -43,6 +43,7 @@
     const response = await fetch(url, { ...options, headers });
     const result = response.status === 204 ? {} : await response.json();
     if (!response.ok) throw new Error(result.error || `Request failed (${response.status}).`);
+    
     return result;
   }
 
@@ -402,8 +403,22 @@
     users.replaceChildren(...data.users.map((user) => {
       const button = node("button", "user-item", "");
       button.dataset.username = user.username;
-      const avatar = node("span", "user-avatar", user.username.slice(0, 1).toUpperCase());
-      button.append(avatar, document.createTextNode(`${user.username}${user.room ? ` · ${user.room}` : ""}`));
+      const initial=user.username.slice (0,1).toUpperCase();
+      const avatar = node("span", "user-avatar", initial);
+      if (user.avatar_url){
+        const img= document.createElement("img")
+        img.className= "user-avatar"
+        img.src=user.avatar_url;
+        img.alt=`${user.username}'s profile picture`
+        img.addEventListener("error",()=>{
+          img.replaceWith(avatar);
+        }, {once:true})
+        avatar.replaceChildren();
+        button.append(img)
+      }else{
+        button.append(avatar)
+      }
+      button.append( document.createTextNode(`${user.username}${user.room ? ` · ${user.room}` : ""}`));
       if (user.username.toLowerCase() === username.toLowerCase()) button.classList.add("me");
       return button;
     }));
@@ -573,6 +588,58 @@
     document.getElementById("profile-dialog").showModal();
   });
 
+  const avatarinput=document.getElementById("profile-avatar-input");
+  const avatarpreview=document.getElementById("profile-avatar-preview");
+  avatarinput.addEventListener("change", async(event) =>{
+    const file=event.target.files[0];
+    if (!file ) return;
+
+    if(!["image/png","image/jpeg","image/webp"].includes(file.type)){
+      showError("please Select an image.")
+      avatarinput.value="";
+      return;
+    }
+    if(file.size > 4* 1024 * 1024){
+      showError("The image must be 4MB or less");
+      avatarinput.value="";
+      return;
+    }
+
+
+    const imageUrl=URL.createObjectURL(file);
+    avatarpreview.src=imageUrl
+
+    try{
+      const avatarFile=avatarinput.files[0];
+      if (avatarFile){
+        const formData=new FormData();
+        formData.append("avatar",avatarFile)
+        const result= await api("/api/avatar",{
+            method:"POST",
+            body:formData
+        })
+
+        avatarpreview.src=avatarResult.avatar_url;
+
+        const headerAvatar=document.getElementById("header-avatar")
+        if(headerAvatar){
+          headerAvatar.src=result.avatar_url
+        }
+      }
+
+
+      avatarpreview.src=result.avatar_url;
+      URL.revokeObjectURL(imageUrl)
+    }catch(error){
+      showError(error.message)
+      URL.revokeObjectURL(imageUrl)
+    }
+  })
+
+
+
+
+
   document.getElementById("block-user").addEventListener("click", async (event) => {
     if (!currentRecipient) return;
     const blocking = event.currentTarget.textContent === "Block user";
@@ -632,7 +699,20 @@
     }
   });
   document.getElementById("profile-save").addEventListener("click", async () => {
+    const profileErorr=document.getElementById("profile-error");
+    const avatarfile=avatarinput.files[0]
     try {
+      if (avatarfile){
+        const formData=new FormData();
+        formData.append("avatar",avatarfile);
+
+        const avatarResult=await api("/api/avatar",{
+          method:"POST",
+          body:formData,
+        })
+
+        avatarpreview.src=avatarResult.avatar_url
+      }
       const result = await api("/api/profile", {
         method: "POST",
         body: JSON.stringify({ username: document.getElementById("profile-name").value.trim() }),
@@ -642,7 +722,7 @@
       root.dataset.username = username;
       document.getElementById("profile-dialog").close();
     } catch (error) {
-      document.getElementById("profile-error").textContent = error.message;
+      profileErorr.textContent=error.message
     }
   });
 

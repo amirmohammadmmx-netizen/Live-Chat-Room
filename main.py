@@ -83,6 +83,7 @@ def init_db() -> None:
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user', 'admin')),
             avatar_color TEXT NOT NULL DEFAULT '#6a11cb',
+            avatar_filename TEXT,
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS rooms (
@@ -163,6 +164,12 @@ def init_db() -> None:
         db.execute(
             "INSERT OR IGNORE INTO rooms(name, created_at) VALUES (?, ?)",
             (room, utc_now()),
+        )
+
+    columns=db.execute("PRAGMA table_info(users)").fetchall()
+    if not any(column["name"] == "avatar_filename" for column in columns):
+        db.execute(
+            "ALTER TABLE users ADD COLUMN avatar_filename TEXT"
         )
     db.commit()
 
@@ -286,6 +293,11 @@ def serialize_message(row: sqlite3.Row, viewer_id: int) -> dict:
         "id": row["id"],
         "sender": row["username"],
         "sender_id": row["sender_id"],
+        "avatar_url":(
+            url_for("avatar_file", filename=row["avatar_filename"])
+            if row["avatar_filename"]
+            else url_for("static",filename="default-avatar.jpg")
+        ),
         "room_id": row["room_id"],
         "body": row["body"],
         "created_at": row["created_at"],
@@ -482,6 +494,96 @@ def register_routes(app: Flask) -> None:
         socketio.emit("presence", active_users_payload())
         return jsonify(username=username)
 
+
+    @app.post("/api/avatar")
+    @login_required
+    def uploadavatar():
+        uploaded=request.files.get("avatar")
+
+        if uploaded is None or not uploaded.filename:
+            return jsonify(error="Choose a picture"), 400
+
+        extenention=uploaded.filename.rsplit(".",1)[-1].lower()
+        if extenention not in {"png", "jpg" , "jpeg" , "webp"}:
+            return jsonify(error="Use a png,jpg,jpeg or webp"), 415
+
+        content=uploaded.read(4 * 1024 * 1024 + 1)
+        if not content:
+            return jsonify(error="The image is empty "), 400
+
+        if len(content) > 4 * 1024 * 1024:
+            return jsonify(error="The image must be 4MB or less"),413
+
+        isPNG=content.startswith(b"\x89PNG\r\n\x1a\n")
+        is_jpeg=content.startswith(b"\xff\xd8\xff")
+        is_webp=(
+            len(content)>=12
+            and content[:4] == b"RIFF"
+            and content[8:12]== b"WEBP"
+        )
+
+        if not (isPNG or is_jpeg or is_webp):
+            return jsonify(error="This file isn't a supported image."),415
+
+
+        extenention="jpg" if is_jpeg else extenention
+        if is_jpeg and extenention=="jpeg":
+            extenention="jpg"
+
+        avatar_folder=Path(app.config["UPLOAD_FOLDER"]) / "avatars"
+        avatar_folder.mkdir(parents=True, exist_ok=True)
+
+        stored_name=f"{uuid.uuid4().hex}.{extenention}"
+        file_path=avatar_folder/ stored_name
+
+        db=get_db()
+        old_user=db.execute(
+            "SELECT avatar_filename FROM users WHERE id=?",
+            (session["user_id"],),
+        ).fetchone()
+
+        file_path.write_bytes(content)
+
+
+        try:
+            db=get_db()
+            db.execute(
+                "UPDATE users SET avatar_filename=? WHERE id=?",
+                (stored_name, session["user_id"]),
+            )
+            db.commit()
+        except sqlite3.Error:
+            file_path.unlink(missing_ok=True)
+            db.rollback()
+            current_app.logger.exception("Failed to Save Profile Picture")
+            return jsonify(error="couldn not save profile picture."),500
+        if old_user and old_user["avatar_filename"]:
+            old_name=old_user["avatar_filename"]
+
+            if re.fullmatch(r"[0-9a-f]{32}\.{png|jpg|webp}",old_name):
+                (avatar_folder / old_name).unlink(missing_ok=True)
+
+        return jsonify(
+            avatar_url=url_for("avatar_file",filename=stored_name)
+        ),200
+
+    
+    @app.get("/avatars/<filename>")
+    @login_required
+    def avatar_file(filename : str):
+        if not re.fullmatch(r"[0-9a-f]{32}\.(png|jpg|webp)",filename):
+            abort(404)
+
+        avatar_folder=Path(app.config["UPLOAD_FOLDER"]) / "avatars"
+        return send_from_directory(
+            avatar_folder,
+            filename,
+            as_attachment=False,
+            conditional=True
+        )
+
+
+
     @app.get("/api/rooms")
     @login_required
     def list_rooms():
@@ -618,7 +720,7 @@ def register_routes(app: Flask) -> None:
             return jsonify(error="Room not found or access denied."), 404
         if is_room_banned(room_id, session["user_id"]):
             return jsonify(error="You are banned from this room."), 403
-        sql = """SELECT m.*, u.username FROM messages m JOIN users u ON u.id = m.sender_id
+        sql = """SELECT m.*, u.username , u.avatar_filename FROM messages m JOIN users u ON u.id = m.sender_id
                  WHERE m.room_id = ? AND m.deleted_at IS NULL"""
         params: list[int] = [room_id]
         if before is not None:
@@ -959,7 +1061,7 @@ def register_routes(app: Flask) -> None:
 def active_users_payload(room_id: str | None = None) -> dict:
     with presence_lock:
         users = [
-            {"username": entry["username"], "room": entry.get("room", "")}
+            {"username": entry["username"], "room": entry.get("room", ""), "avatar_url":url_for("avatar_file", filename=entry["avatar_filename"]) if entry.get("avatar_filename") else url_for("static",filename="default-avatar.jpg"), }
             for entry in presence.values()
             if room_id is None or entry.get("room") == room_id
         ]
@@ -975,6 +1077,7 @@ def on_connect(auth=None):
         presence[request.sid] = {
             "user_id": str(user["id"]),
             "username": user["username"],
+            "avatar_filename": user["avatar_filename"],
             "sent_at": [],
         }
     join_room(f"user:{user['id']}")
